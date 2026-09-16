@@ -75,6 +75,7 @@ async def async_setup_entry(
         LibrusZadaniaSensor(coordinator, config_entry),
         LibrusTerminarzSensor(coordinator, config_entry),
         LibrusPlanLekcjiSensor(coordinator, config_entry),
+        LibrusZajeciaDodatkoweSensor(coordinator, config_entry),
         LibrusFrekwencjaSensor(coordinator, config_entry),
         LibrusOgloszeniaSensor(coordinator, config_entry),
     ]
@@ -760,6 +761,50 @@ class LibrusPlanLekcjiSensor(CoordinatorEntity, SensorEntity):
             wynik["jutro"] = []
             
         return wynik
+
+
+class LibrusZajeciaDodatkoweSensor(CoordinatorEntity, SensorEntity):
+    """Czujnik Dziennika zajec dodatkowych (DZD)."""
+
+    def __init__(self, coordinator: LibrusDataUpdateCoordinator, config_entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._config_entry = config_entry
+        self._attr_has_entity_name = False
+        self._attr_name = "Zajęcia dodatkowe"
+        self._attr_unique_id = f"{config_entry.entry_id}_zajecia_dodatkowe"
+        self._attr_icon = "mdi:book-plus"
+
+    def _dni(self) -> List[Dict[str, Any]]:
+        """Zwroc plan kolejnych 7 dni ograniczony do wpisow DZD."""
+        plan = (self.coordinator.data or {}).get("plan_lekcji", [])
+        return [
+            {
+                "dzien_tygodnia": dzien.get("dzien_tygodnia"),
+                "data": dzien.get("data"),
+                "zajecia": [l for l in dzien.get("lekcje", []) if l.get("typ") == "dzd"],
+            }
+            for dzien in plan
+        ]
+
+    @property
+    def device_info(self) -> Dict[str, Any]:
+        return _device_info(self.coordinator, self._config_entry)
+
+    @property
+    def native_value(self) -> str:
+        """Stan sensora to liczba zajec dodatkowych dzisiaj."""
+        dni = self._dni()
+        return str(len(dni[0]["zajecia"])) if dni else "0"
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        dni = self._dni()
+        return {
+            "kolejne_7_dni": dni,
+            "dzisiaj": dni[0]["zajecia"] if dni else [],
+            "jutro": dni[1]["zajecia"] if len(dni) > 1 else [],
+            "liczba_w_tygodniu": sum(len(d["zajecia"]) for d in dni),
+        }
 
 
 class LibrusFrekwencjaSensor(CoordinatorEntity, SensorEntity):

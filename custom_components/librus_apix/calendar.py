@@ -92,6 +92,11 @@ class LibrusTimetableCalendar(CoordinatorEntity, CalendarEntity):
                     summary = lekcja.get("przedmiot", "Lekcja")
                     sala = lekcja.get("nauczyciel_i_sala", "")
                     description = f"Nauczyciel i sala: {sala}" if sala else ""
+                    if lekcja.get("typ") == "dzd":
+                        summary = f"DZD: {summary}"
+                        description = "\n".join(
+                            filter(None, ["Dziennik zajęć dodatkowych", description])
+                        )
                     
                     events.append(
                         CalendarEvent(

@@ -15,6 +15,7 @@ from homeassistant.helpers import config_validation as cv
 
 from librus_apix.client import Client, new_client
 from librus_apix.exceptions import TokenError
+from requests.cookies import RequestsCookieJar
 
 from .const import DOMAIN, SCAN_INTERVAL
 
@@ -112,6 +113,8 @@ class LibrusApiClient:
             try:
                 loop = asyncio.get_running_loop()
                 self._client = await loop.run_in_executor(None, new_client)
+                # librus-apix wspoldzieli domyslny CookieJar miedzy instancjami Client
+                self._client.cookies = RequestsCookieJar()
                 self._token = await loop.run_in_executor(
                     None, self._client.get_token, self.username, self.password
                 )

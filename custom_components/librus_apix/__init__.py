@@ -424,7 +424,13 @@ class LibrusApiClient:
                         post = client.post(client.TIMETABLE_URL, data={"tydzien": week})
                         soup = no_access_check(BeautifulSoup(post.text, "lxml"))
 
-                        dzd.update(_parse_dzd_entries(soup))
+                        wpisy = _parse_dzd_entries(soup)
+                        _LOGGER.debug(
+                            "Plan %s: HTML %d znakow, 'dzd-entry' w HTML: %d, sparsowane wpisy DZD: %d",
+                            week, len(post.text), post.text.count("dzd-entry"),
+                            sum(len(v) for v in wpisy.values()),
+                        )
+                        dzd.update(wpisy)
                         for entry in soup.select("div.dzd-entry"):
                             entry.decompose()
 

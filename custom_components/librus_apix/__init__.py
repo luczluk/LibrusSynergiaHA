@@ -421,7 +421,11 @@ class LibrusApiClient:
                     for start in (monday, next_monday):
                         sunday = start + timedelta(days=6)
                         week = f"{start.strftime('%Y-%m-%d')}_{sunday.strftime('%Y-%m-%d')}"
-                        post = client.post(client.TIMETABLE_URL, data={"tydzien": week})
+                        # pokaz_zajecia_dzd wlacza komorki Dziennika zajec dodatkowych
+                        post = client.post(
+                            client.TIMETABLE_URL,
+                            data={"tydzien": week, "pokaz_zajecia_dzd": "1"},
+                        )
                         soup = no_access_check(BeautifulSoup(post.text, "lxml"))
 
                         wpisy = _parse_dzd_entries(soup)

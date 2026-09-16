@@ -32,60 +32,24 @@ def _current_semester() -> int:
     return 1 if m >= 9 else 2
 
 
-def _parse_dzd_entries(soup) -> Dict[str, list]:
-    """Wyciagnij wpisy Dziennika zajec dodatkowych (DZD) z HTML planu lekcji.
+def _dzd_entry(wpis: Dict[str, Any]) -> Dict[str, Any]:
+    """Przeksztalc wpis z OtherActivitiesRegister na format lekcji w planie."""
+    nauczyciel = (wpis.get("teacherName") or "").strip()
+    sala = (wpis.get("classroom") or {}).get("symbol") or ""
+    if nauczyciel and sala:
+        opis = f"{nauczyciel} - {sala}"
+    else:
+        opis = nauczyciel or (f"Sala {sala}" if sala else "")
 
-    Biblioteka librus-apix nie obsluguje komorek `div.dzd-entry` (potrafi sie
-    na nich wywrocic), dlatego parsujemy je samodzielnie.
-    Zwraca mape data (YYYY-MM-DD) -> lista wpisow.
-    """
-    import re
-
-    wynik: Dict[str, list] = {}
-    for entry in soup.select("div.dzd-entry"):
-        cell = entry.find_parent("td")
-        if cell is None:
-            continue
-
-        dzien = cell.get("data-date", "")
-        godzina_od = cell.get("data-time_from", "")
-        godzina_do = cell.get("data-time_to", "")
-
-        link = entry.select_one("a[title]")
-        if link is not None:
-            title = link["title"].replace("\xa0", " ")
-            od = re.search(r"Godzina od:\s*(\d{1,2}:\d{2})", title)
-            do = re.search(r"Godzina do:\s*(\d{1,2}:\d{2})", title)
-            if od:
-                godzina_od = od.group(1)
-            if do:
-                godzina_do = do.group(1)
-
-        opis_el = entry.select_one("div.text b") or entry.select_one("div.text")
-        opis = opis_el.get_text(" ", strip=True) if opis_el is not None else ""
-        if not dzien or not opis:
-            continue
-
-        sala = ""
-        sala_match = re.search(r"\(s\.\s*(.*?)\)\s*$", opis)
-        if sala_match:
-            sala = sala_match.group(1).strip().strip("()").strip()
-            opis = opis[: sala_match.start()].strip()
-
-        wpis = {
-            "przedmiot": opis,
-            "nauczyciel_i_sala": f"Sala {sala}" if sala else "",
-            "godzina_od": godzina_od,
-            "godzina_do": godzina_do,
-            "data": dzien,
-            "numer": None,
-            "typ": "dzd",
-        }
-        dzien_wpisy = wynik.setdefault(dzien, [])
-        if wpis not in dzien_wpisy:
-            dzien_wpisy.append(wpis)
-
-    return wynik
+    return {
+        "przedmiot": (wpis.get("title") or "").strip(),
+        "nauczyciel_i_sala": opis,
+        "godzina_od": wpis.get("startTime", ""),
+        "godzina_do": wpis.get("endTime", ""),
+        "data": wpis.get("date", ""),
+        "numer": None,
+        "typ": "dzd",
+    }
 
 
 class _StaticResponse:
@@ -417,24 +381,13 @@ class LibrusApiClient:
 
                 def _fetch_two_weeks():
                     timetable = []
-                    dzd: Dict[str, list] = {}
                     for start in (monday, next_monday):
                         sunday = start + timedelta(days=6)
                         week = f"{start.strftime('%Y-%m-%d')}_{sunday.strftime('%Y-%m-%d')}"
-                        # pokaz_zajecia_dzd wlacza komorki Dziennika zajec dodatkowych
-                        post = client.post(
-                            client.TIMETABLE_URL,
-                            data={"tydzien": week, "pokaz_zajecia_dzd": "1"},
-                        )
+                        post = client.post(client.TIMETABLE_URL, data={"tydzien": week})
                         soup = no_access_check(BeautifulSoup(post.text, "lxml"))
 
-                        wpisy = _parse_dzd_entries(soup)
-                        _LOGGER.debug(
-                            "Plan %s: HTML %d znakow, 'dzd-entry' w HTML: %d, sparsowane wpisy DZD: %d",
-                            week, len(post.text), post.text.count("dzd-entry"),
-                            sum(len(v) for v in wpisy.values()),
-                        )
-                        dzd.update(wpisy)
+                        # komorki DZD wywracaja parser biblioteki - bierzemy je z API
                         for entry in soup.select("div.dzd-entry"):
                             entry.decompose()
 
@@ -449,9 +402,39 @@ class LibrusApiClient:
                                 week, err,
                             )
                             timetable += [[] for _ in range(7)]
-                    return timetable, dzd
+                    return timetable
 
-                timetable, dzd_wpisy = await loop.run_in_executor(None, _fetch_two_weeks)
+                def _fetch_dzd():
+                    """Pobierz Dziennik zajec dodatkowych z gateway API."""
+                    oauth = client.token.oauth or client.refresh_oauth()
+                    client.cookies["oauth_token"] = oauth
+                    ostatni = next_monday + timedelta(days=6)
+                    url = (
+                        f"{client.BASE_URL}/gateway/api/2.0/Timetables/OtherActivitiesRegister"
+                        f"?dateFrom={monday.strftime('%Y-%m-%d')}"
+                        f"&dateTo={ostatni.strftime('%Y-%m-%d')}"
+                        f"&hideOutdatedEntries=false"
+                    )
+                    wynik: Dict[str, list] = {}
+                    for wpis in client.get(url).json().get("data", []):
+                        if wpis.get("status") != "ACTUAL":
+                            continue
+                        lekcja = _dzd_entry(wpis)
+                        if lekcja["data"]:
+                            wynik.setdefault(lekcja["data"], []).append(lekcja)
+                    return wynik
+
+                timetable = await loop.run_in_executor(None, _fetch_two_weeks)
+
+                try:
+                    dzd_wpisy = await loop.run_in_executor(None, _fetch_dzd)
+                    _LOGGER.debug(
+                        "Pobrano zajecia dodatkowe: %d dni, %d wpisow",
+                        len(dzd_wpisy), sum(len(v) for v in dzd_wpisy.values()),
+                    )
+                except Exception as err:
+                    _LOGGER.warning("Nie udalo sie pobrac zajec dodatkowych: %s", err)
+                    dzd_wpisy = {}
 
                 result = []
                 dni_nazwy = ["Poniedziałek", "Wtorek", "Środa", "Czwartek", "Piątek", "Sobota", "Niedziela"]
